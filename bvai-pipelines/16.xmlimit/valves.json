@@ -1,0 +1,1 @@
+{"pipelines": ["perplexity.perplexity"], "priority": 16, "requests_per_minute": 20, "requests_per_hour": 40, "global_requests_per_minute": 300, "global_requests_per_hour": 600}

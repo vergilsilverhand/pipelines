@@ -1,0 +1,1 @@
+{"pipelines": ["imagenbv"], "priority": 18, "requests_per_minute": 10, "requests_per_hour": 30, "global_requests_per_minute": 150, "global_requests_per_hour": 1500}
