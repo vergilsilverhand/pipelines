@@ -1,0 +1,1 @@
+{"pipelines": ["AI.google/gemini-3-pro-image-preview"], "priority": 10, "requests_per_minute": 2, "requests_per_hour": 4, "global_requests_per_minute": 20, "global_requests_per_hour": 50}

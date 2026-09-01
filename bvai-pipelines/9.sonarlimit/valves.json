@@ -1,0 +1,1 @@
+{"pipelines": ["xmptest.https://api.perplexity.ai"], "priority": 9, "default_tokens_per_1k_chars": 900, "tokens_per_minute": 50000, "tokens_per_hour": 90000, "global_tokens_per_minute": 800000, "global_tokens_per_hour": 8000000}

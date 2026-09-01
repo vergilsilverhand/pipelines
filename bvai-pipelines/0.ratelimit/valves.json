@@ -1,0 +1,1 @@
+{"pipelines": ["*"], "priority": 0, "requests_per_minute": 10, "requests_per_hour": 100, "global_requests_per_minute": 500, "global_requests_per_hour": 10000}
