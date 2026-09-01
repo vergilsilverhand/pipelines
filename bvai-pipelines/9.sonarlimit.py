@@ -91,6 +91,10 @@ class Pipeline:
 
     async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
         print(f"pipe:{__name__}")
+
+        # 前序限流器已判定超限：跳过计数并原样放行，交由内置 Function 抛出提示
+        if isinstance(body, dict) and body.get("_bvai_limit_msg"):
+            return body
         
         # 获取用户输入
         content = ""
@@ -105,15 +109,15 @@ class Pipeline:
         
         # 检查全局限制
         if self.global_token_limited(tokens):
-            raise Exception(f"全局 sonar 令牌限制已超过。系统当前已达到容量。")
-        
+            body["_bvai_limit_msg"] = f"全局 sonar 令牌限制已超过。系统当前已达到容量。"
+            return body
         # 检查用户级限制
         if user and user.get("role", "admin") == "user":
             user_id = user.get("id", "default_user")
             
             if self.user_token_limited(user_id, tokens):
-                raise Exception(f"用户 sonar 令牌限制已超过，请稍后再试。")
-            
+                body["_bvai_limit_msg"] = f"用户 sonar 令牌限制已超过，请稍后再试。"
+                return body
             self.log_tokens(user_id, tokens)
         else:
             now = time.time()

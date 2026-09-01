@@ -96,6 +96,10 @@ class Pipeline:
 
     async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
         print(f"pipe:{__name__}")
+
+        # 前序限流器已判定超限：跳过计数并原样放行，交由内置 Function 抛出提示
+        if isinstance(body, dict) and body.get("_bvai_limit_msg"):
+            return body
         print(f"Body: {body}")
         print(f"User: {user}")
         
@@ -123,15 +127,15 @@ class Pipeline:
         
         # Check global limits
         if self.global_token_limited(total_tokens):
-            raise Exception(self.valves.global_limit_error_message)
-        
+            body["_bvai_limit_msg"] = self.valves.global_limit_error_message
+            return body
         # Check user-level limits
         if user and user.get("role", "admin") != "admin":
             user_id = user.get("id", "default_user")
             
             if self.user_token_limited(user_id, total_tokens):
-                raise Exception(self.valves.user_limit_error_message)
-            
+                body["_bvai_limit_msg"] = self.valves.user_limit_error_message
+                return body
             self.log_tokens(user_id, total_tokens)
         else:
             # Just log global tokens for admin users

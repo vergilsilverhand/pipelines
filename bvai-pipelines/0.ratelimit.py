@@ -91,15 +91,20 @@ class Pipeline:
     async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
         print(f"pipe:{__name__}")
 
+        # 前序限流器已判定超限：跳过计数并原样放行，交由内置 Function 抛出提示
+        if isinstance(body, dict) and body.get("_bvai_limit_msg"):
+            return body
+
         # 先检查全局限制（对所有用户都生效）
         if self.global_rate_limited():
-            raise Exception("Global rate limit exceeded. The system is currently at capacity.")
-
+            body["_bvai_limit_msg"] = "Global rate limit exceeded. The system is currently at capacity."
+            return body
         # 再检查用户级限制（仅对普通用户生效）
         if user and user.get("role", "admin") == "user":
             user_id = user.get("id", "default_user")
             if self.rate_limited(user_id):
-                raise Exception("Rate limit exceeded. Please try again later.")
+                body["_bvai_limit_msg"] = "Rate limit exceeded. Please try again later."
+                return body
             self.log_request(user_id)
         else:
             # 即使是管理员用户，也记录到全局限制中
