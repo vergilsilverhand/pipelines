@@ -132,6 +132,21 @@
 
         messages = body.get("messages") or []
         is_limited_user = bool(user) and user.get("role", "admin") != "admin"
+        # 标题 / 标签 / 追问等后台任务只走 pipelines、不走 bvai_limit_notice：写进 body 的 _bvai_* 标记
+        # 没人移除、会漏到上游；抛异常也不行 —— 回答后的任务在 open-webui 里没有 try，异常会把已成功的
+        # 回答标成错误。所以任务请求照常计入额度，但永不拦截、不裁剪、不写标记。
+        # 普通聊天的 metadata 由 open-webui 服务端生成并整体覆盖，用户无法伪造 task 字段。
+        # 注意：任务模型（后台「任务模型」设置）不要选挂了限流器的昂贵模型，否则直接调任务接口可绕过额度。
+        metadata = body.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("task"):
+            if isinstance(messages, list):
+                tokens = sum(self.message_tokens(x) for x in messages)
+                if is_limited_user:
+                    self.prune_tokens(user.get("id", "default_user"))
+                    self.log_tokens(user.get("id", "default_user"), tokens)
+                else:
+                    self.global_tokens.append((tokens, time.time()))
+            return body
 
         # 单次上限：超过就从最早的历史开始裁，而不是永久拒绝
         if is_limited_user and isinstance(messages, list):
@@ -142,7 +157,7 @@
                 return body
             if dropped:
                 body["messages"] = messages = kept
-                # 同一模型可能挂多个限流器，依次裁剪，丢弃条数累加
+                # 正常一个模型只挂一个限流器（有测试保证）；万一挂了多个，丢弃条数累加
                 body["_bvai_trim_notice"] = int(body.get("_bvai_trim_notice") or 0) + dropped
 
         total_tokens = sum(self.message_tokens(x) for x in messages) if isinstance(messages, list) else 0

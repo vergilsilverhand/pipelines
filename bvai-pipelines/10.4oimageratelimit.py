@@ -95,6 +95,12 @@ class Pipeline:
         if isinstance(body, dict) and body.get("_bvai_limit_msg"):
             return body
 
+        # 标题 / 标签 / 追问等后台任务：不计次数、不拦截。它们不走 bvai_limit_notice，写标记会漏到上游；
+        # 一轮聊天还会附带多次任务请求，不该占用户的请求次数。
+        metadata = body.get("metadata") if isinstance(body, dict) else None
+        if isinstance(metadata, dict) and metadata.get("task"):
+            return body
+
         # 先检查全局限制（对所有用户都生效）
         if self.global_rate_limited():
             body["_bvai_limit_msg"] = "全局 4o生图ai 次数限制已超过。系统当前已达到容量。"

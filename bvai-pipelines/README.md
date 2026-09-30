@@ -1,6 +1,6 @@
 # BVAI 自定义限流器
 
-19 个 token / 请求限流 filter，服务于 bestvpnai.org。
+17 个 token / 请求限流 filter，服务于 bestvpnai.org（2026-09-30 删除了停用的 8.grok3limit 与重复挂在 qwen3.5 上的 12.qwen3limit）。
 
 ## 为什么放在这个目录而不是 pipelines/
 
@@ -42,13 +42,13 @@ curl -s "https://<webui>/api/v1/pipelines/<id>/valves?urlIdx=0" \
 
 ## 修改 token 限流逻辑
 
-15 个 token 限流器（Valves 含 `tokens_per_minute` 的文件）共用同一段方法，
+13 个 token 限流器（Valves 含 `tokens_per_minute` 的文件）共用同一段方法，
 源头是 `bvai-tools/token_limit_methods.py`。**不要直接改单个文件**：
 
 ```bash
-# 改模板后同步到 15 个文件（各文件 Valves / __init__ 头部保留）
+# 改模板后同步到全部 token 限流器（各文件 Valves / __init__ 头部保留）
 python bvai-tools/sync_token_limits.py
-# 跑测试（含「15 个文件与模板一致」的检查）
+# 跑测试（含「与模板一致」「每个模型只挂一个限流器」「pipelines 必须是真实模型 id」的检查）
 uv run --quiet --with pytest --with pydantic pytest bvai-tests -q
 ```
 

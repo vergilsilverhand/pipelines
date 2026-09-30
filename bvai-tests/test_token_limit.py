@@ -6,6 +6,8 @@
 """
 import asyncio
 import copy
+import json
+import re
 import importlib.util
 import time
 from pathlib import Path
@@ -71,7 +73,27 @@ def long_chat(rounds=10):
 
 
 def test_found_all_token_limiters():
-    assert len(TOKEN_LIMITERS) == 15, TOKEN_LIMITERS
+    assert len(TOKEN_LIMITERS) == 13, TOKEN_LIMITERS
+
+
+def test_each_model_has_at_most_one_token_limiter():
+    """同一模型挂多个限流器会依次裁剪、重复扣额度（曾经 qwen3.5 同时挂了 12 号和 17 号）。"""
+    owners = {}
+    for stem in TOKEN_LIMITERS:
+        valves = json.loads((PIPELINES_DIR / stem / "valves.json").read_text())
+        for model in valves.get("pipelines", []):
+            owners.setdefault(model, []).append(stem)
+    dup = {m: s for m, s in owners.items() if len(s) > 1}
+    assert not dup, dup
+
+
+def test_every_token_limiter_targets_a_real_model_id():
+    """pipelines 里写 "1" 之类的占位值等于没生效（曾经 8.grok3limit 就是这样）。"""
+    for stem in TOKEN_LIMITERS:
+        valves = json.loads((PIPELINES_DIR / stem / "valves.json").read_text())
+        targets = valves.get("pipelines", [])
+        assert targets, stem
+        assert all(t == "*" or "." in t or "/" in t for t in targets), (stem, targets)
 
 
 @pytest.mark.parametrize("stem", TOKEN_LIMITERS)
@@ -243,3 +265,42 @@ def test_chained_limiters_report_total_dropped():
     dropped = len(msgs) - len(body["messages"])
     assert dropped > 12  # 前提：第二个限流器确实又裁了
     assert body["_bvai_trim_notice"] == dropped
+
+
+# ---- 后台任务（标题 / 标签 / 追问等）----
+# 这类请求只走 pipelines inlet、不走 bvai_limit_notice：写进 body 的 _bvai_* 标记没人移除、会漏到上游；
+# 抛异常也不行 —— 回答后的标题/标签/追问任务在 open-webui 里没有 try，异常会把已成功的回答标成错误。
+# 所以对任务请求：照常计入额度（成本仍算在用户头上），但永不拦截、不裁剪、不写任何标记。
+
+def run_task(p, messages, uid="u1"):
+    body = {"messages": copy.deepcopy(messages), "metadata": {"task": "title_generation", "chat_id": "c1"}}
+    return asyncio.run(p.inlet(body, {"id": uid, "role": "user"}))
+
+
+@pytest.mark.parametrize("stem", TOKEN_LIMITERS)
+def test_task_over_quota_passes_and_is_charged(stem):
+    p = load(stem)
+    p.user_tokens["u1"] = [(CAP, time.time())]  # 前提：这一分钟的额度已用满，普通请求会被拦
+    assert "_bvai_limit_msg" in run(p, [m("user", "x", 100)])
+    p.user_tokens["u1"] = [(CAP, time.time())]
+    out = run_task(p, [m("user", "prompt", 100)])
+    assert not any(k.startswith("_bvai") for k in out)
+    assert sum(t for t, _ in p.user_tokens["u1"]) == CAP + 100
+
+
+@pytest.mark.parametrize("stem", TOKEN_LIMITERS)
+def test_task_over_global_limit_passes(stem):
+    p = load(stem, global_tokens_per_minute=10)
+    assert "_bvai_limit_msg" in run(p, [m("user", "x", 100)], uid="u2")  # 前提：全局额度会拦普通请求
+    out = run_task(p, [m("user", "prompt", 100)])
+    assert not any(k.startswith("_bvai") for k in out)
+
+
+@pytest.mark.parametrize("stem", TOKEN_LIMITERS)
+def test_oversized_or_long_task_is_passed_untouched(stem):
+    p = load(stem)
+    for msgs in ([m("user", "prompt", 1200)], long_chat()):
+        assert est(msgs) > CAP  # 前提：普通请求会被拒或被裁
+        out = run_task(p, msgs)
+        assert out["messages"] == msgs
+        assert not any(k.startswith("_bvai") for k in out)
