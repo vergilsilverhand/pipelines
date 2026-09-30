@@ -39,3 +39,22 @@ curl -s "https://<webui>/api/v1/pipelines/<id>/valves?urlIdx=0" \
 ```
 
 > 切勿向 `valves/update` 端点发送空对象 `{}`，那会把配额重置为源码默认值。
+
+## 修改 token 限流逻辑
+
+15 个 token 限流器（Valves 含 `tokens_per_minute` 的文件）共用同一段方法，
+源头是 `bvai-tools/token_limit_methods.py`。**不要直接改单个文件**：
+
+```bash
+# 改模板后同步到 15 个文件（各文件 Valves / __init__ 头部保留）
+python bvai-tools/sync_token_limits.py
+# 跑测试（含「15 个文件与模板一致」的检查）
+uv run --quiet --with pytest --with pydantic pytest bvai-tests -q
+```
+
+行为要点：单次请求超过 `min(tokens_per_minute, tokens_per_hour)` 时从最早的历史裁剪
+（切点只落在 user，开头 system 与最后一轮完整保留），按裁剪后大小扣额度；
+最后一轮本身放不下才拒绝。配套的提示机制见 `_openwebui-function/README.md`。
+
+**上线前**：若线上 valves 在后台改过，先把它们同步回各 `valves.json`，
+否则重新部署会用仓库里的旧值覆盖线上配置。

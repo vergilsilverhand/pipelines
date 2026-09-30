@@ -1,30 +1,3 @@
-import time
-from typing import List, Optional
-from pydantic import BaseModel
-
-class Pipeline:
-    class Valves(BaseModel):
-        pipelines: List[str] = ["orm.unirouter/anthropic/claude-3.7-sonnet"]
-        priority: int = 2
-        default_tokens_per_1k_chars: int = 1800
-        tokens_per_minute: int = 2000
-        tokens_per_hour: int = 4000
-        global_tokens_per_minute: Optional[int] = 40000
-        global_tokens_per_hour: Optional[int] = 120000
-        # Error messages
-        global_limit_error_message: str = "Global Sonnet 3.7 token limit exceeded. System currently at capacity."
-        user_limit_error_message: str = "User Sonnet 3.7 token limit exceeded. Please try again later."
-        image_token_cost: int = 1024  # Estimated token cost for images
-
-    def __init__(self):
-        self.type = "filter"
-        self.name = "Sonnet 3.7 Token Limit"
-        # Make sure to set a valid ID without spaces or special characters
-        self.id = "sonnet37_token_limit"
-        self.valves = self.Valves()
-        self.user_tokens = {}  # User token usage records
-        self.global_tokens = []  # Global token usage records
-
     async def on_startup(self):
         print(f"on_startup:{__name__}")
 
