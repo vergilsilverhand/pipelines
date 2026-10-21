@@ -16,6 +16,10 @@ class Pipeline:
         global_limit_error_message: str = "全局 r1 令牌限制已超过。系统当前已达到容量。"
         user_limit_error_message: str = "用户 r1 令牌限制已超过。请稍后再试。"
         image_token_cost: int = 1024  # 图像的令牌成本估算
+        # 今天已超每日贵模型预算（open-webui 的 daily_budget 会降级到 Luna）时改用的额度，单独计数；None = 不检查（不查库）
+        over_budget_tokens_per_minute: Optional[int] = None
+        over_budget_tokens_per_hour: Optional[int] = None
+        over_budget_limit_error_message: str = "用户 降级模型（超预算） token限制已超过。请稍后再试。"  # 实际文案写在 valves.json
 
     def __init__(self):
         self.type = "filter"
@@ -49,12 +53,13 @@ class Pipeline:
             if now - timestamp < 3600
         ]
 
-    def log_tokens(self, user_id: str, tokens: int):
+    def log_tokens(self, user_id: str, tokens: int, count_global: bool = True):
         now = time.time()
         if user_id not in self.user_tokens:
             self.user_tokens[user_id] = []
         self.user_tokens[user_id].append((tokens, now))
-        self.global_tokens.append((tokens, now))
+        if count_global:
+            self.global_tokens.append((tokens, now))
 
     @staticmethod
     def seconds_until_fits(usage, tokens: int, limit: int, window: int) -> float:
@@ -70,14 +75,30 @@ class Pipeline:
                 return ts + window - now
         return window
 
-    def user_limit_wait(self, user_id: str, tokens: int) -> float:
-        """0 表示可放行；否则为需要等待的秒数。"""
+    def user_limit_wait(self, user_id: str, tokens: int, per_minute: Optional[int] = None, per_hour: Optional[int] = None) -> float:
+        """0 表示可放行；否则为需要等待的秒数。额度缺省取本限流器的 tokens_per_minute / tokens_per_hour。"""
         self.prune_tokens(user_id)
         usage = self.user_tokens.get(user_id, [])
         return max(
-            self.seconds_until_fits(usage, tokens, self.valves.tokens_per_minute, 60),
-            self.seconds_until_fits(usage, tokens, self.valves.tokens_per_hour, 3600),
+            self.seconds_until_fits(usage, tokens, per_minute or self.valves.tokens_per_minute, 60),
+            self.seconds_until_fits(usage, tokens, per_hour or self.valves.tokens_per_hour, 3600),
         )
+
+    async def over_budget_lookup(self, user_id: str) -> bool:
+        """今天是否已超每日贵模型预算（读 open-webui 库的 bvai_spend_daily，见 utils/bvai_budget.py）。"""
+        from utils.bvai_budget import is_over_budget
+
+        return await is_over_budget(user_id)
+
+    async def is_over_budget(self, user_id: str) -> bool:
+        """只有配置了超预算额度的贵模型限流器才查；查不到或出错按未超预算处理。"""
+        if not getattr(self.valves, "over_budget_tokens_per_hour", None):
+            return False
+        try:
+            return bool(await self.over_budget_lookup(user_id))
+        except Exception as e:
+            print(f"[{__name__}] 查每日预算失败，按未超预算处理：{e}")
+            return False
 
     def global_token_limited(self, tokens: int) -> bool:
         self.prune_global_tokens()
@@ -187,9 +208,15 @@ class Pipeline:
                     self.global_tokens.append((tokens, time.time()))
             return body
 
+        # 今天已超每日贵模型预算：open-webui 的 daily_budget 会把这条降级到 Luna（在 pipelines 之后执行），
+        # 所以按 Luna 的额度裁剪和计数，记在单独的桶里，也不占本模型的全局额度
+        over = is_limited_user and await self.is_over_budget(user.get("id", "default_user"))
+        per_minute = (self.valves.over_budget_tokens_per_minute or self.valves.over_budget_tokens_per_hour) if over else self.valves.tokens_per_minute
+        per_hour = self.valves.over_budget_tokens_per_hour if over else self.valves.tokens_per_hour
+
         # 单次上限：超过就从最早的历史开始裁，而不是永久拒绝
         if is_limited_user and isinstance(messages, list):
-            cap = min(self.valves.tokens_per_minute, self.valves.tokens_per_hour)
+            cap = min(per_minute, per_hour)
             kept, dropped = self.fit_messages(messages, cap)
             if kept is None:
                 body["_bvai_limit_msg"] = OVERSIZE_ERROR_MESSAGE
@@ -202,18 +229,20 @@ class Pipeline:
         total_tokens = sum(self.message_tokens(x) for x in messages) if isinstance(messages, list) else 0
 
         # 检查全局限制
-        if self.global_token_limited(total_tokens):
+        if not over and self.global_token_limited(total_tokens):
             body["_bvai_limit_msg"] = self.valves.global_limit_error_message
             return body
 
         if is_limited_user:
             user_id = user.get("id", "default_user")
-            wait = self.user_limit_wait(user_id, total_tokens)
+            bucket = f"{user_id}:over_budget" if over else user_id
+            wait = self.user_limit_wait(bucket, total_tokens, per_minute, per_hour)
             if wait > 0:
                 minutes = max(1, -(-int(wait) // 60))
-                body["_bvai_limit_msg"] = f"{self.valves.user_limit_error_message}（约 {minutes} 分钟后恢复）"
+                message = self.valves.over_budget_limit_error_message if over else self.valves.user_limit_error_message
+                body["_bvai_limit_msg"] = f"{message}（约 {minutes} 分钟后恢复）"
                 return body
-            self.log_tokens(user_id, total_tokens)
+            self.log_tokens(bucket, total_tokens, count_global=not over)
         else:
             now = time.time()
             self.global_tokens.append((total_tokens, now))
