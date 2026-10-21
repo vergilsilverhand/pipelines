@@ -9,6 +9,7 @@ class Pipeline:
         default_tokens_per_1k_chars: int = 1800
         tokens_per_minute: int = 3000
         tokens_per_hour: int = 7000
+        trim_step_ratio: float = 0.1  # 超限时按单次上限的这个比例整块地切（0=逐条裁剪）；0.1 在缓存增益与上下文损失间最划算（10-21 回放）
         global_tokens_per_minute: Optional[int] = 70000
         global_tokens_per_hour: Optional[int] = 500000
         # 可配置的错误信息
@@ -141,6 +142,18 @@ class Pipeline:
         remaining = sum(sizes)
         if fixed + remaining <= cap:
             return messages, 0  # 放得下就原样返回，不受「切点须落在 user」约束
+        # 阶梯式：按历史从头累计的 token，每跨过一个 step 记一个切点（落在 user 上），取第一个放得下的。
+        # step 只看 cap，不看会随每轮变化的 fixed；早期消息的累计值不变，切点就不变 —— 开头在多轮里保持不变，
+        # 提示词缓存持续命中，放不下了才跳到下一个切点。找不到时走下面的逐条裁剪。
+        step = int(cap * self.valves.trim_step_ratio)
+        if step > 0:
+            acc, mark = 0, step
+            for start in range(1, len(history)):
+                acc += sizes[start - 1]
+                if acc >= mark and isinstance(history[start], dict) and history[start].get("role") == "user":
+                    mark = (acc // step + 1) * step
+                    if fixed + remaining - acc <= cap:
+                        return messages[:lead] + history[start:] + tail, start
         for start in range(len(history) + 1):
             at_user = start == len(history) or (isinstance(history[start], dict) and history[start].get("role") == "user")
             if at_user and fixed + remaining <= cap:

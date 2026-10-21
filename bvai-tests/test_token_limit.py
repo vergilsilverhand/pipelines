@@ -31,6 +31,7 @@ TEST_VALVES = dict(
     global_tokens_per_minute=None,
     global_tokens_per_hour=None,
     image_token_cost=100,
+    trim_step_ratio=0.25,  # 测阶梯式机制本身，不依赖默认值
 )
 CAP = 1000
 
@@ -119,10 +120,29 @@ def test_long_chat_is_trimmed_instead_of_rejected(stem):
     assert kept[1]["role"] == "user"  # 切点落在 user
     assert kept[-1] == msgs[-1]  # 最新提问保留
     assert est(kept) <= CAP
-    # 尽量多留：50 + 4 轮×200 + 100 = 950 ≤ 1000，再多一轮就超
-    assert len(kept) == 1 + 4 * 2 + 1
-    assert kept[1:] == msgs[-9:]
-    assert out["_bvai_trim_notice"] == 12  # 22 条里丢了 12 条
+    assert kept[1:] == msgs[len(msgs) - len(kept) + 1:]  # 保留的是原对话的一段后缀
+    assert out["_bvai_trim_notice"] == len(msgs) - len(kept)
+    # 不再「尽量多留」到极限：整块地切（见 test_trim_keeps_prefix_stable_across_turns），最多比极限少留约 1/4 上限
+    assert est(kept) >= CAP * 3 // 4 - 200
+
+
+@pytest.mark.parametrize("stem", TOKEN_LIMITERS)
+def test_trim_keeps_prefix_stable_across_turns(stem):
+    """2026-10-21：原来按滑动窗口裁，超限后每多一轮开头就变，提示词缓存每轮失效；贵模型单次上限只有 3000~6000，
+    几乎每轮都在裁。改成按累计 token 的固定切点整块地切：开头在多轮里不变，剩余再超限才往后跳。"""
+    p = load(stem)
+    msgs = [m("system", "sys", 50)]
+    for i in range(40):
+        msgs += [m("user", f"u{i}", 20), m("assistant", f"a{i}", 20)]
+    starts = []
+    for k in range(30):
+        msgs += [m("user", f"n{k}", 20)]
+        kept = run(p, msgs, uid=f"u-{k}")["messages"]  # 每轮换用户 id，避免撞时间窗额度
+        assert est(kept) <= CAP and kept[1]["role"] == "user" and kept[-1] == msgs[-1]
+        starts.append(kept[1]["content"])
+        msgs += [m("assistant", f"r{k}", 20)]
+    changes = sum(1 for a, b in zip(starts, starts[1:]) if a != b)
+    assert 1 <= changes <= 6, changes  # 30 轮只跳几次（滑动窗口会跳 29 次）
 
 
 @pytest.mark.parametrize("stem", TOKEN_LIMITERS)
